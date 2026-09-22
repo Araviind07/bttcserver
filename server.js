@@ -587,7 +587,7 @@ app.get('/', (req, res) => {
   <p class="sub">Showing the latest 100 events received from the frontend. Storage: <strong>${EventModel ? 'MongoDB' : 'JSON file (data/events.json)'}</strong></p>
   <p>
     <button onclick="load()">↻ Refresh</button>
-    <button onclick="copyJson()">📋 Copy JSON</button>
+    <button onclick="copyJson()">📋 Copy J_SON</button>
   </p>
   <div id="grid" class="grid"></div>
   <pre id="raw" style="display:none"></pre>
