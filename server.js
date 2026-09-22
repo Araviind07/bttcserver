@@ -41,6 +41,7 @@ const path = require('path');
 let mongoose = null;
 let EventModel = null;
 let WalletModel = null;
+let TicketModel = null;
 const MONGODB_URI = process.env.MONGODB_URI || null;
 
 if (MONGODB_URI) {
@@ -103,18 +104,36 @@ if (MONGODB_URI) {
     );
     WalletModel = mongoose.model('Wallet', walletSchema);
     console.log('[init] Wallets collection created for per-wallet persistence');
+
+    // ─── Tickets Collection ─────────────────────────────
+    const ticketSchema = new mongoose.Schema(
+      {
+        name: { type: String, required: true },
+        email: { type: String, required: true },
+        subject: { type: String, required: true },
+        message: { type: String, required: true },
+        status: { type: String, default: 'open' },
+        createdAt: { type: Date, default: Date.now, index: true },
+        updatedAt: { type: Date, default: Date.now },
+      },
+      { strict: false, timestamps: true },
+    );
+    TicketModel = mongoose.model('Ticket', ticketSchema);
+    console.log('[init] Tickets collection created');
   } catch (err) {
     console.warn('[init] MONGODB_URI set but mongoose not installed. Falling back to JSON file.');
     console.warn('       Run: npm install mongoose');
     mongoose = null;
     EventModel = null;
     WalletModel = null;
+    TicketModel = null;
   }
 }
 
 // ─── JSON file fallback ─────────────────────────────────────────
 const DATA_DIR = path.join(__dirname, 'data');
 const EVENTS_FILE = path.join(DATA_DIR, 'events.json');
+const TICKETS_FILE = path.join(DATA_DIR, 'tickets.json');
 
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) {
@@ -122,6 +141,9 @@ function ensureDataDir() {
   }
   if (!fs.existsSync(EVENTS_FILE)) {
     fs.writeFileSync(EVENTS_FILE, '[]', 'utf8');
+  }
+  if (!fs.existsSync(TICKETS_FILE)) {
+    fs.writeFileSync(TICKETS_FILE, '[]', 'utf8');
   }
 }
 
@@ -137,6 +159,20 @@ function readJsonEvents() {
 function writeJsonEvents(events) {
   ensureDataDir();
   fs.writeFileSync(EVENTS_FILE, JSON.stringify(events, null, 2), 'utf8');
+}
+
+function readJsonTickets() {
+  try {
+    const raw = fs.readFileSync(TICKETS_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+function writeJsonTickets(tickets) {
+  ensureDataDir();
+  fs.writeFileSync(TICKETS_FILE, JSON.stringify(tickets, null, 2), 'utf8');
 }
 
 // Throttled write — avoid disk thrash on high-traffic events
@@ -449,6 +485,67 @@ app.put('/api/wallets/:wallet/ledger', async (req, res) => {
     console.error('[mongo] ledger PUT failed', err);
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+// ─── Tickets endpoints ──────────────────────────────────────────
+// POST /api/tickets   submit a contact/support ticket
+// GET  /api/tickets   list tickets (admin)
+
+app.post('/api/tickets', async (req, res) => {
+  const { name, email, subject, message } = req.body || {};
+
+  if (!name || !email || !subject || !message) {
+    return res.status(400).json({ ok: false, error: 'Missing required fields: name, email, subject, message' });
+  }
+
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    return res.status(400).json({ ok: false, error: 'Name is required' });
+  }
+  if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ ok: false, error: 'Valid email is required' });
+  }
+  if (typeof subject !== 'string' || subject.trim().length === 0) {
+    return res.status(400).json({ ok: false, error: 'Subject is required' });
+  }
+  if (typeof message !== 'string' || message.trim().length < 10) {
+    return res.status(400).json({ ok: false, error: 'Message must be at least 10 characters' });
+  }
+
+  const record = {
+    name: name.trim(),
+    email: email.trim().toLowerCase(),
+    subject: subject.trim(),
+    message: message.trim(),
+    status: 'open',
+    createdAt: new Date().toISOString(),
+  };
+
+  if (TicketModel) {
+    try {
+      const saved = await TicketModel.create(record);
+      return res.json({ ok: true, id: saved._id, ticket: saved });
+    } catch (err) {
+      console.error('[mongo] ticket save failed', err.message);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+
+  // JSON fallback
+  ensureDataDir();
+  const tickets = readJsonTickets();
+  tickets.unshift(record);
+  writeJsonTickets(tickets);
+  res.json({ ok: true, id: record.createdAt, ticket: record });
+});
+
+app.get('/api/tickets', async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 200, 5000);
+  if (TicketModel) {
+    const tickets = await TicketModel.find().sort({ createdAt: -1 }).limit(limit).lean();
+    return res.json({ ok: true, count: tickets.length, tickets });
+  }
+  const tickets = readJsonTickets().slice(0, limit);
+  res.json({ ok: true, count: tickets.length, tickets });
 });
 
 // ─── Static admin page (bonus) ──────────────────────────────────
